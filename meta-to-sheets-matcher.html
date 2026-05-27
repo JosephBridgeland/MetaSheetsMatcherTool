@@ -234,7 +234,6 @@
   table.preview tr.match.deselected td { background: #f4f1e8; opacity: 0.55; }
   table.preview tr.unmatched td { background: #fbf0e6; }
   table.preview tr.ambiguous td { background: #fff5cf; }
-  table.preview tr.skip td { background: #f0eee5; color: var(--ink-soft); text-decoration: line-through; }
   .pill {
     display: inline-block;
     padding: 2px 7px;
@@ -244,9 +243,9 @@
     font-weight: 600;
     border: 1px solid currentColor;
   }
-  .pill.ok { color: var(--ok); }
+  .pill.ok   { color: var(--ok); }
   .pill.warn { color: var(--warn); }
-  .pill.err { color: var(--err); }
+  .pill.err  { color: var(--err); }
   .pill.skip { color: var(--ink-soft); }
 
   .log {
@@ -260,9 +259,9 @@
     overflow-y: auto;
     line-height: 1.6;
   }
-  .log .ts { color: #6b6850; margin-right: 8px; }
-  .log .ok { color: #8fd17f; }
-  .log .err { color: #ff7c63; }
+  .log .ts   { color: #6b6850; margin-right: 8px; }
+  .log .ok   { color: #8fd17f; }
+  .log .err  { color: #ff7c63; }
   .log .warn { color: #ffc878; }
 
   .helper {
@@ -456,135 +455,195 @@
   </div>
 </div>
 
-<script>
-// ============================================================
-//  STATE
-// ============================================================
+<script type="module">
+// ── CONFIG ────────────────────────────────────────────────────────────────────
+
+// Each geo: csv values that map to it, and tab name fragments to recognise it.
+const GEO = {
+  US: { csv: ['united states', 'united states | v1', 'usa', 'us'], tabNames: ['USA', 'UNITED STATES', 'US'] },
+  UK: { csv: ['uk', 'united kingdom'],                              tabNames: ['UK', 'UNITED KINGDOM'] },
+  CA: { csv: ['canada', 'ca'],                                      tabNames: ['CANADA', 'CA'] },
+  AU: { csv: ['australia', 'au'],                                   tabNames: ['AUSTRALIA', 'AU'] },
+  DE: { csv: ['germany', 'de'],                                     tabNames: ['GERMANY', 'DE'] },
+  FR: { csv: ['france', 'fr'],                                      tabNames: ['FRANCE', 'FR'] },
+};
+
+const REACH_COL_NAMES  = ['social traffic driver reach'];
+const CLICKS_COL_NAMES = ['social traffic driver clicks'];
+const LS_CLIENT_KEY    = 'mmatcher_client_id';
+const LS_SHEET_KEY     = 'mmatcher_sheet_id';
+
+// ── DERIVED LOOKUPS ───────────────────────────────────────────────────────────
+
+// "united states" → "US", "canada" → "CA", etc.
+const COUNTRY_TO_TAB = Object.fromEntries(
+  Object.entries(GEO).flatMap(([key, { csv }]) => csv.map(v => [v, key]))
+);
+
+// ── STATE ─────────────────────────────────────────────────────────────────────
+
 const state = {
-  csvRows: [],          // [{adSet, country, pub, article, reach, clicks, raw}]
-  countries: new Set(),
+  csvRows:     [],    // parsed ad-set objects
+  sheetData:   {},    // { tabKey → tabData }
+  matches:     [],    // proposed match objects
   accessToken: null,
-  sheetTabs: [],        // [{name, gid}]
-  sheetData: {},        // {tabName: {headers:[], rows:[[...]], headerRowIndex:N}}
-  matches: [],          // proposed matches
-  CLIENT_ID: '',
-  SHEET_ID: '',
+  sheetId:     '',
+  filter:      'all',
 };
 
-// Tab name → list of country strings from CSV that route to this tab
-const TAB_MAP = {
-  'US': ['United States', 'United states', 'United States | V1', 'USA', 'US'],
-  'UK': ['UK', 'United Kingdom'],
-  'CA': ['Canada', 'CA'],
-  'AU': ['Australia', 'AU'],
-  'DE': ['Germany', 'DE'],
-  'FR': ['France', 'FR'],
-};
+let tokenClient = null;
 
-// Reverse lookup: country string (lowercased) → tab name
-const COUNTRY_TO_TAB = {};
-for (const [tab, list] of Object.entries(TAB_MAP)) {
-  for (const c of list) COUNTRY_TO_TAB[c.toLowerCase()] = tab;
+// ── DOM HELPERS ───────────────────────────────────────────────────────────────
+
+const $ = id => document.getElementById(id);
+
+function escHtml(s) {
+  return String(s ?? '').replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
 }
 
-// ============================================================
-//  UTILITIES
-// ============================================================
-function log(msg, kind='') {
-  const el = document.getElementById('log');
-  const t = new Date().toTimeString().slice(0,8);
-  const cls = kind ? ` class="${kind}"` : '';
-  el.innerHTML += `<br/><span class="ts">[${t}]</span><span${cls}>${msg}</span>`;
-  el.scrollTop = el.scrollHeight;
+function fmtNum(n) {
+  return (n == null || isNaN(n))
+    ? '<span style="color:var(--err)">—</span>'
+    : Number(n).toLocaleString();
 }
 
-function normalizeApostrophe(s) {
-  return (s || '').replace(/['']/g, "'").replace(/\s+/g, ' ').trim();
+// Converts 0-based column index to A, B, … Z, AA, AB, …
+function colLetter(idx) {
+  let s = '', n = idx;
+  do { s = String.fromCharCode(65 + (n % 26)) + s; n = Math.floor(n / 26) - 1; } while (n >= 0);
+  return s;
 }
 
-// Normalize publication name for matching: lowercase, normalize apostrophes/spaces.
-// We deliberately keep words like "Pro" intact so "TechRadar Pro" ≠ "TechRadar".
-function normalizePub(s) {
-  return normalizeApostrophe(s).toLowerCase();
+function logMsg(msg, kind = '') {
+  const el = $('log');
+  const t  = new Date().toTimeString().slice(0, 8);
+  el.innerHTML += `<br><span class="ts">[${t}]</span><span${kind ? ` class="${kind}"` : ''}>${msg}</span>`;
+  el.scrollTop  = el.scrollHeight;
 }
 
-// Parse a Meta ad-set name into structured parts.
-// Format: "Brand | Publication - Article N - Topic - Country"
-// (Brand may be "Dell" or "Dell LLM"; Publication may contain "Pro"; topic is ignored.)
-// Meta exports occasionally use en-dash (–) or pipe ( | ) as the country
-// separator instead of hyphen — normalise those to " - " before splitting.
-// We keep the first pipe intact because it separates Brand | Publication;
-// only pipes AFTER that one (which sit before the country) get normalised.
-function parseAdSetName(name) {
-  if (!name) return null;
-  let cleaned = normalizeApostrophe(name);
-  // Strip trailing " | V1" / " | v2" variant suffix FIRST so the next step
-  // doesn't accidentally convert it into a country segment.
-  cleaned = cleaned.replace(/\s*\|\s*v\d+\s*$/i, '');
-  // Replace en-dash and em-dash variants with hyphen-separator
-  cleaned = cleaned.replace(/\s+[–—]\s+/g, ' - ');
-  // Replace pipe-as-separator with hyphen, but preserve the FIRST pipe
-  // which divides Brand from Publication.
-  const firstPipe = cleaned.indexOf('|');
-  if (firstPipe !== -1) {
-    const before = cleaned.slice(0, firstPipe + 1);
-    const after = cleaned.slice(firstPipe + 1).replace(/\s+\|\s+/g, ' - ');
-    cleaned = before + after;
+// ── TEXT NORMALISATION ────────────────────────────────────────────────────────
+
+function normalise(s) {
+  return (s ?? '').replace(/['']/g, "'").replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+// ── GEO / TAB MATCHING ────────────────────────────────────────────────────────
+
+// Returns the geo key (e.g. "FR") for a sheet tab name, or null if not a geo tab.
+// Uses whole-word boundary matching so "FR" won't fire inside "REFRESH", etc.
+function tabKeyForName(tabName) {
+  const upper = tabName.toUpperCase();
+  for (const [key, { tabNames }] of Object.entries(GEO)) {
+    for (const candidate of tabNames) {
+      if (new RegExp(`(?:^|[^A-Z])${candidate}(?:[^A-Z]|$)`).test(upper)) return key;
+    }
   }
-  const segments = cleaned.split(' - ').map(s => s.trim());
-  if (segments.length < 3) return null;
+  return null;
+}
 
-  // First segment contains "Brand | Publication"
-  const firstParts = segments[0].split('|').map(s => s.trim());
-  if (firstParts.length < 2) return null;
-  const publication = firstParts[1];
+// ── CSV PARSING ───────────────────────────────────────────────────────────────
 
-  // Find the "Article N" segment
+// Normalises the separator characters Meta uses between segments:
+//   "Brand | Publication - Article N - Topic - Country"
+// Returns { publication, articleNum, country } or null.
+function parseAdSetName(raw) {
+  if (!raw) return null;
+  let s = raw.replace(/['']/g, "'").replace(/\s+/g, ' ').trim();
+  s = s.replace(/\s*\|\s*v\d+\s*$/i, '');        // strip trailing | V1
+  s = s.replace(/\s+[–—]\s+/g, ' - ');            // en/em-dash → hyphen-dash
+  // The first pipe separates Brand from Publication — preserve it.
+  // Any subsequent pipes are country separators — convert to hyphen-dash.
+  const firstPipe = s.indexOf('|');
+  if (firstPipe !== -1) {
+    s = s.slice(0, firstPipe + 1) + s.slice(firstPipe + 1).replace(/\s+\|\s+/g, ' - ');
+  }
+
+  const parts = s.split(' - ').map(p => p.trim());
+  if (parts.length < 3) return null;
+
+  const pubParts = parts[0].split('|').map(p => p.trim());
+  if (pubParts.length < 2) return null;
+
   let articleNum = null;
-  for (const seg of segments) {
-    const m = seg.match(/^Article\s+(\d+)$/i);
-    if (m) { articleNum = parseInt(m[1], 10); break; }
+  for (const p of parts) {
+    const m = p.match(/^article\s+(\d+)$/i);
+    if (m) { articleNum = +m[1]; break; }
   }
   if (articleNum === null) return null;
 
-  const country = segments[segments.length - 1].trim();
-
-  return { publication, articleNum, country };
+  return { publication: pubParts[1], articleNum, country: parts[parts.length - 1] };
 }
 
-// Parse a sheet "Publication" cell into {publication, articleNum}.
-// Expected: "TechRadar standard article 9", "TechRadar Pro article 14", "Tom's Guide standard article 10", "Windows Central standard article 12", "IT Pro standard article 11"
-function parseSheetPub(text) {
-  if (!text) return null;
-  const cleaned = normalizeApostrophe(text);
-  // Match: <Publication> [standard ]article <N>
-  const m = cleaned.match(/^(.+?)\s+(?:standard\s+)?article\s+(\d+)\s*$/i);
-  if (!m) return null;
-  return { publication: m[1].trim(), articleNum: parseInt(m[2], 10) };
+// Parses a sheet Publication cell like "TechRadar Pro article 14".
+// Returns { publication, articleNum } or null.
+function parseSheetPub(raw) {
+  const m = normalise(raw).match(/^(.+?)\s+(?:standard\s+)?article\s+(\d+)$/);
+  return m ? { publication: m[1].trim(), articleNum: +m[2] } : null;
 }
 
-// Strict match: case/whitespace/apostrophe normalised but Pro is significant.
-function pubsMatch(csvPub, sheetPub) {
-  return normalizePub(csvPub) === normalizePub(sheetPub);
+// ── MATCHING ──────────────────────────────────────────────────────────────────
+
+// Strict: "TechRadar" ≠ "TechRadar Pro".
+// Loose (strict=false): strips trailing "pro" before comparing — used as fallback.
+function pubsEqual(a, b, strict = true) {
+  const n = s => normalise(s);
+  const stripPro = s => n(s).replace(/\s+pro$/, '');
+  return strict ? n(a) === n(b) : stripPro(a) === stripPro(b);
 }
 
-// Loose match: also matches across "Pro" suffix. "TechRadar" ↔ "TechRadar Pro".
-// Only used as a fallback when no strict match exists.
-function pubsMatchLoose(csvPub, sheetPub) {
-  if (pubsMatch(csvPub, sheetPub)) return true;
-  const stripPro = s => normalizePub(s).replace(/\s+pro$/i, '').trim();
-  return stripPro(csvPub) === stripPro(sheetPub);
+// Searches tab rows for article-number + publication matches.
+// Tries strict first; falls back to loose only if strict finds nothing.
+function findCandidates(csvRow, tab) {
+  for (const strict of [true, false]) {
+    const hits = [];
+    for (let i = 0; i < tab.rows.length; i++) {
+      const cell = (tab.rows[i][tab.pubColIdx] ?? '').trim();
+      if (!cell) continue;
+      const parsed = parseSheetPub(cell);
+      if (!parsed || parsed.articleNum !== csvRow.articleNum) continue;
+      if (pubsEqual(csvRow.publication, parsed.publication, strict)) {
+        hits.push({ rowIdx: i, absoluteRow: tab.headerRowIndex + i + 2, sheetText: cell });
+      }
+    }
+    if (hits.length > 0) return { hits, fuzzy: !strict };
+  }
+  return { hits: [], fuzzy: false };
 }
 
-// ============================================================
-//  CSV PARSING
-// ============================================================
+function buildMatches() {
+  state.matches = state.csvRows.map(csvRow => {
+    if (!csvRow.tab) {
+      return { kind: 'unmatched', csvRow, reason: `Unknown country "${csvRow.country}"` };
+    }
+    const tab = state.sheetData[csvRow.tab];
+    if (!tab) {
+      return { kind: 'unmatched', csvRow, reason: `No sheet tab loaded for ${csvRow.tab}` };
+    }
+    const { hits, fuzzy } = findCandidates(csvRow, tab);
+    if (hits.length === 0) {
+      return { kind: 'unmatched', csvRow, reason: `No row in "${tab.tabName}" matches "${csvRow.publication} article ${csvRow.articleNum}"` };
+    }
+    if (hits.length > 1) {
+      return { kind: 'ambiguous', csvRow, tab: csvRow.tab, candidates: hits, fuzzy, selected: false };
+    }
+    return { kind: 'match', csvRow, tab: csvRow.tab, target: hits[0], fuzzy, selected: true };
+  });
+  renderPreview();
+}
+
+function maybeBuildMatches() {
+  if (state.csvRows.length && Object.keys(state.sheetData).length) buildMatches();
+}
+
+// ── CSV FILE HANDLING ─────────────────────────────────────────────────────────
+
 function setupDropzone() {
-  const dz = document.getElementById('dropzone');
-  const input = document.getElementById('fileInput');
+  const dz    = $('dropzone');
+  const input = $('fileInput');
+
   dz.addEventListener('click', () => input.click());
-  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('dragging'); });
-  dz.addEventListener('dragleave', () => dz.classList.remove('dragging'));
+  dz.addEventListener('dragover',  e => { e.preventDefault(); dz.classList.add('dragging'); });
+  dz.addEventListener('dragleave', ()  => dz.classList.remove('dragging'));
   dz.addEventListener('drop', e => {
     e.preventDefault();
     dz.classList.remove('dragging');
@@ -596,353 +655,270 @@ function setupDropzone() {
 }
 
 function handleCsvFile(file) {
-  log(`Parsing CSV: ${file.name} (${(file.size/1024).toFixed(1)} KB)`);
+  logMsg(`Parsing CSV: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`);
   Papa.parse(file, {
     header: true,
     skipEmptyLines: true,
-    complete: (results) => {
-      const rows = results.data;
-      const parsed = [];
+    complete({ data: rows }) {
       let skipped = 0;
+      const parsed = [];
+
       for (const r of rows) {
         const name = r['Ad set name'];
         if (!name) { skipped++; continue; }
         const p = parseAdSetName(name);
-        if (!p) { skipped++; continue; }
-        const reach = parseFloat(r['Reach']);
+        if (!p)  { skipped++; continue; }
+        const reach  = parseFloat(r['Reach']);
         const clicks = parseFloat(r['Link clicks']);
         parsed.push({
-          adSet: name,
+          adSet:      name,
           publication: p.publication,
-          articleNum: p.articleNum,
-          country: p.country,
-          tab: COUNTRY_TO_TAB[p.country.toLowerCase()] || null,
-          reach: isNaN(reach) ? null : Math.round(reach),
-          clicks: isNaN(clicks) ? null : Math.round(clicks),
+          articleNum:  p.articleNum,
+          country:     p.country,
+          tab:         COUNTRY_TO_TAB[normalise(p.country)] ?? null,
+          reach:       isNaN(reach)  ? null : Math.round(reach),
+          clicks:      isNaN(clicks) ? null : Math.round(clicks),
         });
       }
+
       state.csvRows = parsed;
-      state.countries = new Set(parsed.map(p => p.tab).filter(Boolean));
-      const pubs = new Set(parsed.map(p => normalizePub(p.publication)));
+      const geos = new Set(parsed.map(r => r.tab).filter(Boolean));
+      const pubs = new Set(parsed.map(r => normalise(r.publication)));
 
-      document.getElementById('sRows').textContent = parsed.length;
-      document.getElementById('sCountries').textContent = state.countries.size;
-      document.getElementById('sPubs').textContent = pubs.size;
-      document.getElementById('sSkipped').textContent = skipped;
-      document.getElementById('csvStats').style.display = 'block';
-      document.getElementById('dropzone').classList.add('loaded');
-      document.getElementById('dropzone').querySelector('.big').textContent = `Loaded: ${file.name}`;
-      document.getElementById('dropzone').querySelector('.small').textContent = `${parsed.length} ad sets ready · ${state.countries.size} geos · ${pubs.size} unique publications`;
+      $('sRows').textContent      = parsed.length;
+      $('sCountries').textContent = geos.size;
+      $('sPubs').textContent      = pubs.size;
+      $('sSkipped').textContent   = skipped;
+      $('csvStats').style.display = 'block';
+      $('dropzone').classList.add('loaded');
+      $('dropzone').querySelector('.big').textContent   = `Loaded: ${file.name}`;
+      $('dropzone').querySelector('.small').textContent = `${parsed.length} ad sets · ${geos.size} geos · ${pubs.size} publications`;
 
-      log(`Parsed ${parsed.length} ad sets, ${skipped} skipped, geos: ${[...state.countries].join(', ')}`, 'ok');
+      logMsg(`Parsed ${parsed.length} ad sets, ${skipped} skipped. Geos: ${[...geos].join(', ')}`, 'ok');
       maybeBuildMatches();
     },
-    error: (err) => log(`Parse error: ${err.message}`, 'err'),
+    error: err => logMsg(`Parse error: ${err.message}`, 'err'),
   });
 }
 
-// ============================================================
-//  GOOGLE OAUTH (token client — implicit flow, no client secret)
-// ============================================================
-let tokenClient = null;
+// ── GOOGLE OAUTH ──────────────────────────────────────────────────────────────
 
 function loadGisLibrary() {
   return new Promise((resolve, reject) => {
-    if (window.google && google.accounts && google.accounts.oauth2) return resolve();
-    const s = document.createElement('script');
-    s.src = 'https://accounts.google.com/gsi/client';
-    s.async = true;
-    s.defer = true;
-    s.onload = resolve;
-    s.onerror = () => reject(new Error('Failed to load Google Identity Services'));
+    if (window.google?.accounts?.oauth2) return resolve();
+    const s = Object.assign(document.createElement('script'), {
+      src: 'https://accounts.google.com/gsi/client',
+      async: true,
+      defer: true,
+      onload: resolve,
+      onerror: () => reject(new Error('Failed to load Google Identity Services')),
+    });
     document.head.appendChild(s);
   });
 }
 
 async function connectGoogle() {
-  const cid = document.getElementById('clientId').value.trim();
-  const sid = document.getElementById('sheetId').value.trim();
-  if (!cid) { log('Enter your OAuth Client ID first.', 'err'); return; }
-  if (!sid) { log('Enter the Spreadsheet ID first.', 'err'); return; }
-  state.CLIENT_ID = cid;
-  state.SHEET_ID = sid;
+  const cid = $('clientId').value.trim();
+  const sid = $('sheetId').value.trim();
+  if (!cid) { logMsg('Enter your OAuth Client ID first.', 'err'); return; }
+  if (!sid) { logMsg('Enter the Spreadsheet ID first.',   'err'); return; }
+
+  state.sheetId = sid;
+  localStorage.setItem(LS_CLIENT_KEY, cid);
+  localStorage.setItem(LS_SHEET_KEY,  sid);
 
   try {
     await loadGisLibrary();
-    log('Google Identity Services loaded.', 'ok');
+    logMsg('Google Identity Services loaded.', 'ok');
   } catch (e) {
-    log(e.message, 'err'); return;
+    logMsg(e.message, 'err'); return;
   }
 
   tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: cid,
     scope: 'https://www.googleapis.com/auth/spreadsheets',
-    callback: (resp) => {
+    callback(resp) {
       if (resp.error) {
-        log(`OAuth error: ${resp.error}`, 'err');
-        document.getElementById('connStatus').textContent = `Auth failed: ${resp.error}`;
+        logMsg(`OAuth error: ${resp.error}`, 'err');
+        $('connStatus').textContent = `Auth failed: ${resp.error}`;
         return;
       }
       state.accessToken = resp.access_token;
-      document.getElementById('connStatus').innerHTML = '<span class="pill ok">Signed in</span>';
-      document.getElementById('btnLoadSheet').disabled = false;
-      log('Signed in to Google.', 'ok');
+      $('connStatus').innerHTML = '<span class="pill ok">Signed in</span>';
+      $('btnLoadSheet').disabled = false;
+      logMsg('Signed in to Google.', 'ok');
     },
   });
 
   tokenClient.requestAccessToken({ prompt: 'consent' });
 }
 
-async function gapi(path, opts = {}) {
-  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${state.SHEET_ID}${path}`, {
-    ...opts,
-    headers: {
-      'Authorization': `Bearer ${state.accessToken}`,
-      'Content-Type': 'application/json',
-      ...(opts.headers || {}),
-    },
-  });
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`Sheets API ${res.status}: ${t}`);
-  }
+// ── SHEETS API ────────────────────────────────────────────────────────────────
+
+async function sheetsApi(path, opts = {}) {
+  const res = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${state.sheetId}${path}`,
+    {
+      ...opts,
+      headers: {
+        Authorization:  `Bearer ${state.accessToken}`,
+        'Content-Type': 'application/json',
+        ...opts.headers,
+      },
+    }
+  );
+  if (!res.ok) throw new Error(`Sheets API ${res.status}: ${await res.text()}`);
   return res.json();
 }
 
-// ============================================================
-//  LOAD SHEET STRUCTURE
-// ============================================================
+// ── LOAD SHEET STRUCTURE ──────────────────────────────────────────────────────
+
 async function loadSheet() {
-  log('Loading spreadsheet metadata...');
+  logMsg('Loading spreadsheet metadata…');
   try {
-    const meta = await gapi('?fields=sheets(properties(sheetId,title))');
-    state.sheetTabs = meta.sheets.map(s => ({ name: s.properties.title, gid: s.properties.sheetId }));
-    log(`Tabs found: ${state.sheetTabs.map(t => t.name).join(', ')}`, 'ok');
+    const meta = await sheetsApi('?fields=sheets(properties(sheetId,title))');
+    const allTabs = meta.sheets.map(s => ({ name: s.properties.title, gid: s.properties.sheetId }));
+    logMsg(`Tabs found: ${allTabs.map(t => t.name).join(', ')}`, 'ok');
 
-    // Match tab name to country code using whole-word matching so "DE" inside
-    // "UNITED" or "FR" inside "FRANCE" doesn't accidentally cross-match.
-    const tabMatchesKey = (name, key) => {
-      const n = name.toUpperCase();
-      // Try full country names first (e.g. "France" → FR)
-      const fullNames = { US: ['USA','UNITED STATES'], UK: ['UK','UNITED KINGDOM'], CA: ['CANADA'], AU: ['AUSTRALIA'], DE: ['GERMANY'], FR: ['FRANCE'] };
-      if ((fullNames[key] || []).some(full => { const re = new RegExp('(?:^|[^A-Z])' + full + '(?:[^A-Z]|$)'); return re.test(n); })) return true;
-      // Then try the 2-letter code as a whole word
-      return new RegExp('(?:^|[^A-Z])' + key + '(?:[^A-Z]|$)').test(n);
-    };
+    const geoTabs = allTabs.map(t => ({ ...t, key: tabKeyForName(t.name) })).filter(t => t.key);
+    logMsg(`Will read ${geoTabs.length} tab(s): ${geoTabs.map(t => t.name).join(', ')}`);
 
-    // For each tab that maps to a country we care about, fetch the data.
-    const tabsWeWant = state.sheetTabs.filter(t =>
-      Object.keys(TAB_MAP).some(k => tabMatchesKey(t.name, k))
-    );
-    log(`Will read ${tabsWeWant.length} tab(s): ${tabsWeWant.map(t=>t.name).join(', ')}`);
+    for (const t of geoTabs) {
+      logMsg(`  ↳ reading "${t.name}"…`);
+      const resp = await sheetsApi(`/values/${encodeURIComponent(t.name)}?valueRenderOption=FORMATTED_VALUE`);
+      const rows = resp.values ?? [];
 
-    for (const t of tabsWeWant) {
-      log(`  ↳ reading "${t.name}"...`);
-      const resp = await gapi(`/values/${encodeURIComponent(t.name)}?valueRenderOption=FORMATTED_VALUE`);
-      const rows = resp.values || [];
-      // Find header row: any row containing a cell that equals "Publication"
-      let headerIdx = -1;
-      let pubColIdx = -1;
-      for (let i = 0; i < rows.length; i++) {
-        const row = rows[i] || [];
-        for (let c = 0; c < row.length; c++) {
-          if ((row[c] || '').trim().toLowerCase() === 'publication') {
-            headerIdx = i;
-            pubColIdx = c;
-            break;
+      // Find the header row by locating the "Publication" cell.
+      let headerIdx = -1, pubColIdx = -1;
+      outer: for (let r = 0; r < rows.length; r++) {
+        for (let c = 0; c < (rows[r] ?? []).length; c++) {
+          if (normalise(rows[r][c]) === 'publication') {
+            headerIdx = r; pubColIdx = c; break outer;
           }
         }
-        if (headerIdx !== -1) break;
       }
+
       if (headerIdx === -1) {
-        log(`    no "Publication" header found in "${t.name}", skipping.`, 'warn');
+        logMsg(`    no "Publication" header found in "${t.name}", skipping.`, 'warn');
         continue;
       }
-      const headers = rows[headerIdx];
+
+      const headers  = rows[headerIdx];
       const dataRows = rows.slice(headerIdx + 1);
-      // Locate target columns
-      const findCol = (...names) => {
-        for (const n of names) {
-          const idx = headers.findIndex(h => (h||'').toLowerCase().replace(/\s+/g,' ').trim() === n.toLowerCase());
+
+      const findCol = names => {
+        for (const name of names) {
+          const idx = headers.findIndex(h => normalise(h) === name);
           if (idx !== -1) return idx;
         }
         return -1;
       };
-      const reachCol = findCol('Social Traffic Driver Reach', 'Social Traffic Driver Reach ');
-      const clicksCol = findCol('Social Traffic Driver Clicks', 'Social Traffic Driver Clicks ');
 
-      // Find the actual tab key (US/UK/CA/AU/DE/FR)
-      let tabKey = null;
-      for (const k of Object.keys(TAB_MAP)) {
-        if (tabMatchesKey(t.name, k)) { tabKey = k; break; }
-      }
+      const reachColIdx  = findCol(REACH_COL_NAMES);
+      const clicksColIdx = findCol(CLICKS_COL_NAMES);
 
-      state.sheetData[tabKey] = {
-        tabName: t.name,
-        headerRowIndex: headerIdx,         // 0-indexed row of headers
-        headers,
-        rows: dataRows,
-        pubColIdx: pubColIdx,
-        reachColIdx: reachCol,
-        clicksColIdx: clicksCol,
-      };
-      log(`    ${dataRows.length} rows below header; Publication col=${String.fromCharCode(65+pubColIdx)}, Reach col=${reachCol===-1?'NOT FOUND':String.fromCharCode(65+reachCol)}, Clicks col=${clicksCol===-1?'NOT FOUND':String.fromCharCode(65+clicksCol)}`, reachCol===-1||clicksCol===-1?'warn':'ok');
+      state.sheetData[t.key] = { tabName: t.name, headerRowIndex: headerIdx, headers, rows: dataRows, pubColIdx, reachColIdx, clicksColIdx };
+
+      const reachLabel  = reachColIdx  === -1 ? 'NOT FOUND' : colLetter(reachColIdx);
+      const clicksLabel = clicksColIdx === -1 ? 'NOT FOUND' : colLetter(clicksColIdx);
+      logMsg(
+        `    ${dataRows.length} rows; Publication=${colLetter(pubColIdx)}, Reach=${reachLabel}, Clicks=${clicksLabel}`,
+        (reachColIdx === -1 || clicksColIdx === -1) ? 'warn' : 'ok'
+      );
     }
-    log('Sheet structure loaded.', 'ok');
+
+    logMsg('Sheet structure loaded.', 'ok');
     maybeBuildMatches();
   } catch (e) {
-    log(e.message, 'err');
+    logMsg(e.message, 'err');
   }
 }
 
-// ============================================================
-//  MATCHING
-// ============================================================
-function maybeBuildMatches() {
-  if (!state.csvRows.length || !Object.keys(state.sheetData).length) return;
-  buildMatches();
-}
-
-function buildMatches() {
-  const out = [];
-  for (const csvRow of state.csvRows) {
-    if (!csvRow.tab) {
-      out.push({ kind: 'unmatched', csvRow, reason: `Unknown country "${csvRow.country}"`, selected: false });
-      continue;
-    }
-    const tab = state.sheetData[csvRow.tab];
-    if (!tab) {
-      out.push({ kind: 'unmatched', csvRow, reason: `No sheet tab loaded for ${csvRow.tab}`, selected: false });
-      continue;
-    }
-    // Pass 1: strict match (Pro vs non-Pro stays distinct)
-    let candidates = [];
-    let fuzzy = false;
-    for (let i = 0; i < tab.rows.length; i++) {
-      const cell = (tab.rows[i][tab.pubColIdx] || '').trim();
-      if (!cell) continue;
-      const parsed = parseSheetPub(cell);
-      if (!parsed) continue;
-      if (parsed.articleNum !== csvRow.articleNum) continue;
-      if (!pubsMatch(csvRow.publication, parsed.publication)) continue;
-      candidates.push({ rowIdx: i, absoluteRow: tab.headerRowIndex + 1 + i + 1, sheetText: cell });
-    }
-    // Pass 2: if no strict match, try loose (Pro suffix tolerance)
-    if (candidates.length === 0) {
-      for (let i = 0; i < tab.rows.length; i++) {
-        const cell = (tab.rows[i][tab.pubColIdx] || '').trim();
-        if (!cell) continue;
-        const parsed = parseSheetPub(cell);
-        if (!parsed) continue;
-        if (parsed.articleNum !== csvRow.articleNum) continue;
-        if (!pubsMatchLoose(csvRow.publication, parsed.publication)) continue;
-        candidates.push({ rowIdx: i, absoluteRow: tab.headerRowIndex + 1 + i + 1, sheetText: cell });
-      }
-      if (candidates.length > 0) fuzzy = true;
-    }
-    if (candidates.length === 0) {
-      out.push({ kind: 'unmatched', csvRow, reason: `No row in "${tab.tabName}" matches "${csvRow.publication} article ${csvRow.articleNum}"`, selected: false });
-    } else if (candidates.length === 1) {
-      out.push({ kind: 'match', csvRow, tabKey: csvRow.tab, target: candidates[0], selected: true, fuzzy });
-    } else {
-      out.push({ kind: 'ambiguous', csvRow, tabKey: csvRow.tab, candidates, selected: false, fuzzy });
-    }
-  }
-  state.matches = out;
-  renderPreview();
-}
-
-// ============================================================
-//  PREVIEW UI
-// ============================================================
-let currentFilter = 'all';
+// ── PREVIEW RENDERING ─────────────────────────────────────────────────────────
 
 function renderPreview() {
-  const wrap = document.getElementById('previewWrap');
-  const fbar = document.getElementById('filterBar');
-  const wbar = document.getElementById('writeBar');
+  const wrap = $('previewWrap');
   if (!state.matches.length) {
     wrap.innerHTML = '<div class="empty">No matches built yet.</div>';
     return;
   }
-  fbar.style.display = 'flex';
-  wbar.style.display = 'flex';
+
+  $('filterBar').style.display = 'flex';
+  $('writeBar').style.display  = 'flex';
 
   const counts = { all: state.matches.length, match: 0, unmatched: 0, ambiguous: 0 };
   for (const m of state.matches) counts[m.kind]++;
-  document.getElementById('filterCount').textContent =
-    `${counts.match} match · ${counts.unmatched} unmatched · ${counts.ambiguous} ambiguous`;
+  $('filterCount').textContent = `${counts.match} match · ${counts.unmatched} unmatched · ${counts.ambiguous} ambiguous`;
 
-  const filtered = currentFilter === 'all'
+  const visible = state.filter === 'all'
     ? state.matches
-    : state.matches.filter(m => m.kind === currentFilter);
+    : state.matches.filter(m => m.kind === state.filter);
 
-  const rowsHtml = filtered.map((m, i) => {
+  const rowsHtml = visible.map(m => {
     const globalIdx = state.matches.indexOf(m);
+
     const checkbox = m.kind === 'match'
       ? `<input type="checkbox" class="rowsel" data-idx="${globalIdx}" ${m.selected ? 'checked' : ''} />`
-      : (m.kind === 'ambiguous'
-          ? `<input type="checkbox" disabled title="Ambiguous matches cannot be written" />`
-          : `<input type="checkbox" disabled title="Unmatched rows cannot be written" />`);
+      : `<input type="checkbox" disabled />`;
+
     if (m.kind === 'match') {
-      const t = state.sheetData[m.tabKey];
-      const reachColLetter = t.reachColIdx >= 0 ? String.fromCharCode(65 + t.reachColIdx) : '—';
-      const clicksColLetter = t.clicksColIdx >= 0 ? String.fromCharCode(65 + t.clicksColIdx) : '—';
-      const fuzzyBadge = m.fuzzy ? ` <span class="pill warn" title="Pro-suffix fuzzy match — sanity-check this one">fuzzy</span>` : '';
-      return `<tr class="match${m.selected?'':' deselected'}">
-        <td style="text-align:center;">${checkbox}</td>
+      const t            = state.sheetData[m.tab];
+      const reachCell    = t.reachColIdx  >= 0 ? `${colLetter(t.reachColIdx)}${m.target.absoluteRow}`  : '—';
+      const clicksCell   = t.clicksColIdx >= 0 ? `${colLetter(t.clicksColIdx)}${m.target.absoluteRow}` : '—';
+      const fuzzyBadge   = m.fuzzy ? ' <span class="pill warn" title="Pro-suffix fuzzy match — sanity-check this one">fuzzy</span>' : '';
+      const deselCls     = m.selected ? '' : ' deselected';
+      return `<tr class="match${deselCls}" data-idx="${globalIdx}">
+        <td style="text-align:center">${checkbox}</td>
         <td><span class="pill ok">match</span>${fuzzyBadge}</td>
-        <td>${escapeHtml(m.csvRow.adSet)}</td>
-        <td>${m.tabKey}</td>
-        <td>${escapeHtml(m.target.sheetText)}<br/><span style="color:var(--ink-soft); font-size:10px;">row ${m.target.absoluteRow}</span></td>
-        <td><strong>${fmtNum(m.csvRow.reach)}</strong> → ${reachColLetter}${m.target.absoluteRow}</td>
-        <td><strong>${fmtNum(m.csvRow.clicks)}</strong> → ${clicksColLetter}${m.target.absoluteRow}</td>
+        <td>${escHtml(m.csvRow.adSet)}</td>
+        <td>${m.tab}</td>
+        <td>${escHtml(m.target.sheetText)}<br/><span style="color:var(--ink-soft);font-size:10px">row ${m.target.absoluteRow}</span></td>
+        <td><strong>${fmtNum(m.csvRow.reach)}</strong> → ${reachCell}</td>
+        <td><strong>${fmtNum(m.csvRow.clicks)}</strong> → ${clicksCell}</td>
       </tr>`;
     }
+
     if (m.kind === 'unmatched') {
       return `<tr class="unmatched">
-        <td style="text-align:center;">${checkbox}</td>
+        <td style="text-align:center">${checkbox}</td>
         <td><span class="pill err">unmatched</span></td>
-        <td>${escapeHtml(m.csvRow.adSet)}</td>
-        <td>${m.csvRow.tab || '?'}</td>
-        <td colspan="3" style="font-style:italic;">${escapeHtml(m.reason)}</td>
+        <td>${escHtml(m.csvRow.adSet)}</td>
+        <td>${m.csvRow.tab ?? '?'}</td>
+        <td colspan="3" style="font-style:italic">${escHtml(m.reason)}</td>
       </tr>`;
     }
-    if (m.kind === 'ambiguous') {
-      const lines = m.candidates.map(c => `row ${c.absoluteRow}: "${escapeHtml(c.sheetText)}"`).join('<br/>');
-      return `<tr class="ambiguous">
-        <td style="text-align:center;">${checkbox}</td>
-        <td><span class="pill warn">ambiguous</span></td>
-        <td>${escapeHtml(m.csvRow.adSet)}</td>
-        <td>${m.tabKey}</td>
-        <td colspan="3" style="font-style:italic;">Multiple rows match — won't write. Candidates:<br/>${lines}</td>
-      </tr>`;
-    }
-    return '';
+
+    // ambiguous
+    const candidateLines = m.candidates.map(c => `row ${c.absoluteRow}: "${escHtml(c.sheetText)}"`).join('<br/>');
+    return `<tr class="ambiguous">
+      <td style="text-align:center">${checkbox}</td>
+      <td><span class="pill warn">ambiguous</span></td>
+      <td>${escHtml(m.csvRow.adSet)}</td>
+      <td>${m.tab}</td>
+      <td colspan="3" style="font-style:italic">Multiple rows match — won't write. Candidates:<br/>${candidateLines}</td>
+    </tr>`;
   }).join('');
 
   wrap.innerHTML = `
     <table class="preview">
-      <thead>
-        <tr>
-          <th style="width:36px; text-align:center;">✓</th>
-          <th style="width:90px;">Status</th>
-          <th>Meta Ad set</th>
-          <th style="width:50px;">Tab</th>
-          <th>Sheet target</th>
-          <th>Reach</th>
-          <th>Link clicks</th>
-        </tr>
-      </thead>
+      <thead><tr>
+        <th style="width:36px;text-align:center">✓</th>
+        <th style="width:90px">Status</th>
+        <th>Meta Ad set</th>
+        <th style="width:50px">Tab</th>
+        <th>Sheet target</th>
+        <th>Reach</th>
+        <th>Link clicks</th>
+      </tr></thead>
       <tbody>${rowsHtml || '<tr><td colspan="7" class="empty">No rows in this view.</td></tr>'}</tbody>
-    </table>
-  `;
+    </table>`;
 
-  // Wire up checkboxes
   wrap.querySelectorAll('.rowsel').forEach(cb => {
     cb.addEventListener('change', e => {
-      const idx = parseInt(e.target.dataset.idx, 10);
+      const idx = +e.target.dataset.idx;
       state.matches[idx].selected = e.target.checked;
+      // Update row style in-place — no full re-render needed.
+      e.target.closest('tr').classList.toggle('deselected', !e.target.checked);
       updateWriteSummary();
     });
   });
@@ -951,107 +927,92 @@ function renderPreview() {
 }
 
 function updateWriteSummary() {
-  const counts = { match: 0, unmatched: 0, ambiguous: 0, selected: 0 };
+  let total = 0, selected = 0, unmatched = 0, ambiguous = 0;
   for (const m of state.matches) {
-    counts[m.kind]++;
-    if (m.kind === 'match' && m.selected) counts.selected++;
+    if (m.kind === 'match')     { total++;    if (m.selected) selected++; }
+    if (m.kind === 'unmatched') unmatched++;
+    if (m.kind === 'ambiguous') ambiguous++;
   }
-  document.getElementById('writeSummary').innerHTML =
-    `<strong>${counts.selected}</strong> of ${counts.match} matched row${counts.match===1?'':'s'} selected to write. ` +
-    `<strong>${counts.unmatched}</strong> unmatched, <strong>${counts.ambiguous}</strong> ambiguous (always skipped).`;
-  document.getElementById('btnWrite').disabled = counts.selected === 0;
+  $('writeSummary').innerHTML =
+    `<strong>${selected}</strong> of ${total} matched row${total === 1 ? '' : 's'} selected to write. ` +
+    `<strong>${unmatched}</strong> unmatched, <strong>${ambiguous}</strong> ambiguous (always skipped).`;
+  $('btnWrite').disabled = selected === 0;
 }
 
-function escapeHtml(s) {
-  return String(s || '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-}
-function fmtNum(n) {
-  if (n === null || n === undefined || isNaN(n)) return '<span style="color:var(--err)">—</span>';
-  return n.toLocaleString();
-}
+// ── WRITE TO SHEET ────────────────────────────────────────────────────────────
 
-// ============================================================
-//  WRITE TO SHEET (batch update)
-// ============================================================
 async function writeToSheet() {
   const toWrite = state.matches.filter(m => m.kind === 'match' && m.selected);
   if (!toWrite.length) return;
-  if (!confirm(`Write ${toWrite.length} selected row${toWrite.length===1?'':'s'} to your Google Sheet?\n\nReach and Link clicks values will OVERWRITE the existing cells.`)) return;
+  if (!confirm(`Write ${toWrite.length} row${toWrite.length === 1 ? '' : 's'} to your Google Sheet?\n\nReach and Link clicks values will OVERWRITE the existing cells.`)) return;
 
-  document.getElementById('btnWrite').disabled = true;
-  log(`Writing ${toWrite.length} matches to sheet...`);
+  $('btnWrite').disabled = true;
+  logMsg(`Writing ${toWrite.length} matches to sheet…`);
 
-  // Build batch update data: one update per cell
-  const data = [];
-  for (const m of toWrite) {
-    const t = state.sheetData[m.tabKey];
+  const data = toWrite.flatMap(m => {
+    const t = state.sheetData[m.tab];
+    const entries = [];
     if (t.reachColIdx >= 0 && m.csvRow.reach !== null) {
-      data.push({
-        range: `'${t.tabName}'!${colLetter(t.reachColIdx)}${m.target.absoluteRow}`,
-        values: [[m.csvRow.reach]],
-      });
+      entries.push({ range: `'${t.tabName}'!${colLetter(t.reachColIdx)}${m.target.absoluteRow}`, values: [[m.csvRow.reach]] });
     }
     if (t.clicksColIdx >= 0 && m.csvRow.clicks !== null) {
-      data.push({
-        range: `'${t.tabName}'!${colLetter(t.clicksColIdx)}${m.target.absoluteRow}`,
-        values: [[m.csvRow.clicks]],
-      });
+      entries.push({ range: `'${t.tabName}'!${colLetter(t.clicksColIdx)}${m.target.absoluteRow}`, values: [[m.csvRow.clicks]] });
     }
-  }
+    return entries;
+  });
 
   try {
-    const resp = await gapi(':batchUpdate'.replace(':batchUpdate', '/values:batchUpdate'), {
+    const resp = await sheetsApi('/values:batchUpdate', {
       method: 'POST',
       body: JSON.stringify({ valueInputOption: 'USER_ENTERED', data }),
     });
-    log(`✓ Wrote ${resp.totalUpdatedCells} cells across ${resp.totalUpdatedSheets} sheet(s).`, 'ok');
-    document.getElementById('writeSummary').innerHTML += ` <span class="pill ok">Done — ${resp.totalUpdatedCells} cells updated</span>`;
+    logMsg(`✓ Wrote ${resp.totalUpdatedCells} cells across ${resp.totalUpdatedSheets} sheet(s).`, 'ok');
+    $('writeSummary').innerHTML += ` <span class="pill ok">Done — ${resp.totalUpdatedCells} cells updated</span>`;
   } catch (e) {
-    log(`Write failed: ${e.message}`, 'err');
-    document.getElementById('btnWrite').disabled = false;
+    logMsg(`Write failed: ${e.message}`, 'err');
+    $('btnWrite').disabled = false;
   }
 }
 
-function colLetter(idx) {
-  let s = '';
-  let n = idx;
-  do {
-    s = String.fromCharCode(65 + (n % 26)) + s;
-    n = Math.floor(n / 26) - 1;
-  } while (n >= 0);
-  return s;
-}
+// ── INIT ──────────────────────────────────────────────────────────────────────
 
-// ============================================================
-//  EVENT WIRING
-// ============================================================
-document.getElementById('btnConnect').addEventListener('click', connectGoogle);
-document.getElementById('btnLoadSheet').addEventListener('click', loadSheet);
-document.getElementById('btnWrite').addEventListener('click', writeToSheet);
-document.querySelectorAll('.fchip[data-filter]').forEach(el => {
-  el.addEventListener('click', () => {
-    document.querySelectorAll('.fchip[data-filter]').forEach(e => e.classList.remove('active'));
-    el.classList.add('active');
-    currentFilter = el.dataset.filter;
-    renderPreview();
+function init() {
+  // Restore saved credentials so the user doesn't retype them every session.
+  const savedClient = localStorage.getItem(LS_CLIENT_KEY);
+  const savedSheet  = localStorage.getItem(LS_SHEET_KEY);
+  if (savedClient) $('clientId').value = savedClient;
+  if (savedSheet)  $('sheetId').value  = savedSheet;
+
+  setupDropzone();
+
+  $('btnConnect').addEventListener('click', connectGoogle);
+  $('btnLoadSheet').addEventListener('click', loadSheet);
+  $('btnWrite').addEventListener('click', writeToSheet);
+
+  document.querySelectorAll('.fchip[data-filter]').forEach(chip => {
+    chip.addEventListener('click', () => {
+      document.querySelectorAll('.fchip[data-filter]').forEach(c => c.classList.remove('active'));
+      chip.classList.add('active');
+      state.filter = chip.dataset.filter;
+      renderPreview();
+    });
   });
-});
 
-// Select all / none buttons (operate on currently-visible matches only)
-document.addEventListener('click', (e) => {
-  if (e.target.id === 'selectAll' || e.target.id === 'selectNone') {
-    const targetState = e.target.id === 'selectAll';
-    const visible = currentFilter === 'all'
-      ? state.matches
-      : state.matches.filter(m => m.kind === currentFilter);
-    for (const m of visible) {
-      if (m.kind === 'match') m.selected = targetState;
-    }
-    renderPreview();
+  $('selectAll').addEventListener('click', () => setVisibleSelection(true));
+  $('selectNone').addEventListener('click', () => setVisibleSelection(false));
+}
+
+function setVisibleSelection(value) {
+  const visible = state.filter === 'all'
+    ? state.matches
+    : state.matches.filter(m => m.kind === state.filter);
+  for (const m of visible) {
+    if (m.kind === 'match') m.selected = value;
   }
-});
+  renderPreview();
+}
 
-setupDropzone();
+init();
 </script>
 </body>
 </html>
