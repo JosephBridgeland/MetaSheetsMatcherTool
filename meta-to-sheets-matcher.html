@@ -1,0 +1,1046 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Meta → Sheets Matcher</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<style>
+  :root {
+    --bg: #f5f2eb;
+    --ink: #14130f;
+    --ink-soft: #4a4838;
+    --paper: #fffdf5;
+    --line: #2c2a22;
+    --accent: #d6451f;
+    --accent-soft: #f3d9c8;
+    --ok: #2d6a3f;
+    --warn: #b8761a;
+    --err: #9a2a1a;
+    --highlight: #ffe27a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: var(--bg); color: var(--ink); font-family: "Fraunces", Georgia, serif; font-feature-settings: "ss01", "ss02"; }
+  body {
+    min-height: 100vh;
+    padding: 32px 40px 80px;
+    background-image:
+      repeating-linear-gradient(0deg, transparent 0, transparent 39px, rgba(20,19,15,0.04) 39px, rgba(20,19,15,0.04) 40px),
+      radial-gradient(circle at 80% 10%, rgba(214,69,31,0.08), transparent 50%);
+  }
+  .frame {
+    max-width: 1280px;
+    margin: 0 auto;
+    border: 2px solid var(--line);
+    background: var(--paper);
+    box-shadow: 8px 8px 0 var(--line);
+  }
+  header.masthead {
+    padding: 28px 36px 24px;
+    border-bottom: 2px solid var(--line);
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 24px;
+    background: var(--ink);
+    color: var(--paper);
+  }
+  header.masthead h1 {
+    font-family: "Fraunces", serif;
+    font-weight: 800;
+    font-size: clamp(28px, 4vw, 44px);
+    line-height: 0.95;
+    letter-spacing: -0.02em;
+    font-style: italic;
+  }
+  header.masthead h1 .amp { font-style: normal; color: var(--accent); font-weight: 400; padding: 0 4px; }
+  header.masthead .tag {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    color: var(--accent-soft);
+    border: 1px solid var(--accent);
+    padding: 4px 10px;
+  }
+  .body { padding: 32px 36px; }
+  .step {
+    margin-bottom: 36px;
+    padding-bottom: 32px;
+    border-bottom: 1px dashed var(--ink-soft);
+  }
+  .step:last-child { border: none; padding-bottom: 0; margin-bottom: 0; }
+  .step-head {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    margin-bottom: 14px;
+  }
+  .step-num {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    padding: 3px 8px;
+  }
+  .step-title {
+    font-family: "Fraunces", serif;
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .step-sub {
+    font-size: 14px;
+    color: var(--ink-soft);
+    margin-left: auto;
+    font-style: italic;
+  }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .row.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+  input[type=text], input[type=file] {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 13px;
+    padding: 10px 12px;
+    border: 1.5px solid var(--line);
+    background: var(--paper);
+    flex: 1;
+    min-width: 0;
+  }
+  input[type=text]:focus { outline: none; border-color: var(--accent); }
+  label.field {
+    display: block;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    margin-bottom: 6px;
+    color: var(--ink-soft);
+  }
+
+  button {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    padding: 11px 18px;
+    border: 1.5px solid var(--line);
+    background: var(--paper);
+    color: var(--ink);
+    cursor: pointer;
+    transition: all 0.12s;
+    font-weight: 600;
+  }
+  button:hover:not(:disabled) {
+    background: var(--ink);
+    color: var(--paper);
+    transform: translate(-1px, -1px);
+    box-shadow: 2px 2px 0 var(--accent);
+  }
+  button.primary {
+    background: var(--accent);
+    color: var(--paper);
+    border-color: var(--accent);
+  }
+  button.primary:hover:not(:disabled) {
+    background: var(--ink);
+    border-color: var(--ink);
+  }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .file-drop {
+    border: 2px dashed var(--ink-soft);
+    padding: 32px;
+    text-align: center;
+    font-size: 14px;
+    color: var(--ink-soft);
+    cursor: pointer;
+    transition: all 0.2s;
+    background: rgba(255,253,245,0.5);
+  }
+  .file-drop:hover, .file-drop.dragging {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--ink);
+  }
+  .file-drop.loaded {
+    border-style: solid;
+    border-color: var(--ok);
+    background: #e8f0e4;
+    color: var(--ok);
+  }
+  .file-drop .big { font-size: 18px; font-weight: 600; display: block; margin-bottom: 4px; }
+  .file-drop .small { font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: 0.05em; }
+
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0;
+    margin-top: 20px;
+    border: 1.5px solid var(--line);
+  }
+  .stat {
+    padding: 14px 16px;
+    border-right: 1px solid var(--line);
+  }
+  .stat:last-child { border-right: none; }
+  .stat .n {
+    font-family: "Fraunces", serif;
+    font-size: 32px;
+    font-weight: 800;
+    line-height: 1;
+    letter-spacing: -0.02em;
+  }
+  .stat .l {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--ink-soft);
+    margin-top: 6px;
+  }
+  .stat.ok .n { color: var(--ok); }
+  .stat.warn .n { color: var(--warn); }
+  .stat.err .n { color: var(--err); }
+
+  table.preview {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    margin-top: 16px;
+    font-family: "JetBrains Mono", monospace;
+  }
+  table.preview th {
+    text-align: left;
+    padding: 8px 10px;
+    background: var(--ink);
+    color: var(--paper);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    border-right: 1px solid var(--ink-soft);
+  }
+  table.preview td {
+    padding: 8px 10px;
+    border-bottom: 1px solid #e6e2d4;
+    border-right: 1px solid #e6e2d4;
+    vertical-align: top;
+  }
+  table.preview tr.match td { background: #f0f5ec; }
+  table.preview tr.match.deselected td { background: #f4f1e8; opacity: 0.55; }
+  table.preview tr.unmatched td { background: #fbf0e6; }
+  table.preview tr.ambiguous td { background: #fff5cf; }
+  table.preview tr.skip td { background: #f0eee5; color: var(--ink-soft); text-decoration: line-through; }
+  .pill {
+    display: inline-block;
+    padding: 2px 7px;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 600;
+    border: 1px solid currentColor;
+  }
+  .pill.ok { color: var(--ok); }
+  .pill.warn { color: var(--warn); }
+  .pill.err { color: var(--err); }
+  .pill.skip { color: var(--ink-soft); }
+
+  .log {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12px;
+    padding: 14px 16px;
+    background: var(--ink);
+    color: #c9d3a8;
+    margin-top: 16px;
+    max-height: 220px;
+    overflow-y: auto;
+    line-height: 1.6;
+  }
+  .log .ts { color: #6b6850; margin-right: 8px; }
+  .log .ok { color: #8fd17f; }
+  .log .err { color: #ff7c63; }
+  .log .warn { color: #ffc878; }
+
+  .helper {
+    font-size: 13px;
+    color: var(--ink-soft);
+    line-height: 1.55;
+    margin-top: 8px;
+  }
+  .helper code {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    background: #ede9db;
+    padding: 1px 6px;
+    border: 1px solid #d4cfb8;
+  }
+  details.howto {
+    margin-top: 14px;
+    padding: 12px 16px;
+    border: 1px solid var(--ink-soft);
+    background: #faf7ec;
+  }
+  details.howto summary {
+    cursor: pointer;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--accent);
+    font-weight: 600;
+  }
+  details.howto[open] summary { margin-bottom: 12px; }
+  details.howto ol { padding-left: 22px; font-size: 13px; line-height: 1.7; }
+  details.howto ol li { margin-bottom: 4px; }
+  details.howto code { font-family: "JetBrains Mono", monospace; font-size: 11px; background: #ede9db; padding: 1px 6px; border: 1px solid #d4cfb8; word-break: break-all; }
+
+  .filter-bar {
+    display: flex;
+    gap: 8px;
+    margin-top: 14px;
+    margin-bottom: 4px;
+    align-items: center;
+  }
+  .filter-bar .fchip {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    padding: 5px 11px;
+    border: 1px solid var(--line);
+    cursor: pointer;
+    background: var(--paper);
+    color: var(--ink);
+  }
+  .filter-bar .fchip.active {
+    background: var(--ink);
+    color: var(--paper);
+  }
+  .filter-bar .right { margin-left: auto; font-size: 11px; color: var(--ink-soft); font-family: "JetBrains Mono", monospace; }
+
+  .empty {
+    text-align: center;
+    padding: 36px;
+    color: var(--ink-soft);
+    font-style: italic;
+  }
+  .write-bar {
+    margin-top: 22px;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .write-bar .grow { flex: 1; min-width: 100px; }
+  .footnote {
+    margin-top: 30px;
+    padding-top: 18px;
+    border-top: 1px dashed var(--ink-soft);
+    font-family: "JetBrains Mono", monospace;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--ink-soft);
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+
+<div class="frame">
+  <header class="masthead">
+    <h1>Meta<span class="amp">→</span><em>Sheets</em><br/>Matcher</h1>
+    <div class="tag">Local · Browser-only · vibe coded by Joseph Bridgeland</div>
+  </header>
+
+  <div class="body">
+
+    <!-- STEP 1 -->
+    <section class="step">
+      <div class="step-head">
+        <span class="step-num">01</span>
+        <span class="step-title">Drop your Meta CSV export</span>
+        <span class="step-sub">parsed in-browser, never leaves your machine</span>
+      </div>
+      <div id="dropzone" class="file-drop">
+        <span class="big">Drop CSV here or click to choose</span>
+        <span class="small">Expecting columns: Ad set name · Reach · Link clicks</span>
+        <input id="fileInput" type="file" accept=".csv" hidden />
+      </div>
+      <div id="csvStats" style="display:none">
+        <div class="stats">
+          <div class="stat ok"><div class="n" id="sRows">0</div><div class="l">Rows parsed</div></div>
+          <div class="stat"><div class="n" id="sCountries">0</div><div class="l">Geos detected</div></div>
+          <div class="stat"><div class="n" id="sPubs">0</div><div class="l">Publications</div></div>
+          <div class="stat warn"><div class="n" id="sSkipped">0</div><div class="l">Unparseable</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- STEP 2 -->
+    <section class="step">
+      <div class="step-head">
+        <span class="step-num">02</span>
+        <span class="step-title">Connect Google Sheets</span>
+        <span class="step-sub">OAuth via your own client ID</span>
+      </div>
+      <div class="row cols">
+        <div>
+          <label class="field">Google OAuth Client ID</label>
+          <input id="clientId" type="text" placeholder="xxxxxxxxxxxx.apps.googleusercontent.com" />
+        </div>
+        <div>
+          <label class="field">Spreadsheet ID (from the URL)</label>
+          <input id="sheetId" type="text" placeholder="1AbC...xyZ" />
+        </div>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <button id="btnConnect">Sign in with Google</button>
+        <button id="btnLoadSheet" disabled>Load Sheet Structure</button>
+        <span id="connStatus" class="helper" style="margin-top:0; margin-left:6px;"></span>
+      </div>
+      <details class="howto">
+        <summary>How to set this up (one-time, ~5 min)</summary>
+        <ol>
+          <li>Go to <code>console.cloud.google.com</code> → create a new project (or pick one).</li>
+          <li>APIs &amp; Services → <strong>Library</strong> → search "Google Sheets API" → <strong>Enable</strong>.</li>
+          <li>APIs &amp; Services → <strong>OAuth consent screen</strong> → pick <em>External</em>, app name "Meta Matcher", add your Gmail as a test user.</li>
+          <li>APIs &amp; Services → <strong>Credentials</strong> → <strong>Create Credentials → OAuth client ID</strong> → Application type: <em>Web application</em>.</li>
+          <li>Under <strong>Authorised JavaScript origins</strong>, add <code>http://localhost</code> AND <code>null</code> (so file:// works). If neither is allowed, run <code>python -m http.server 8080</code> in the file's folder and add <code>http://localhost:8080</code>.</li>
+          <li>Copy the Client ID, paste above. Open your Sheet in browser — the URL has <code>/d/SPREADSHEET_ID/edit</code> — copy that ID into the second field.</li>
+        </ol>
+      </details>
+    </section>
+
+    <!-- STEP 3 -->
+    <section class="step">
+      <div class="step-head">
+        <span class="step-num">03</span>
+        <span class="step-title">Review proposed matches</span>
+        <span class="step-sub">nothing writes until you say so</span>
+      </div>
+      <div class="filter-bar" id="filterBar" style="display:none">
+        <span class="fchip active" data-filter="all">All</span>
+        <span class="fchip" data-filter="match">Matches</span>
+        <span class="fchip" data-filter="unmatched">Unmatched</span>
+        <span class="fchip" data-filter="ambiguous">Ambiguous</span>
+        <span style="margin-left:14px; padding-left:14px; border-left:1px solid var(--ink-soft);"></span>
+        <span class="fchip" id="selectAll" title="Select all matches currently visible">☑ Select all</span>
+        <span class="fchip" id="selectNone" title="Unselect everything visible">☐ Unselect all</span>
+        <span class="right" id="filterCount"></span>
+      </div>
+      <div id="previewWrap">
+        <div class="empty">Load CSV and sheet to see proposed matches.</div>
+      </div>
+      <div class="write-bar" id="writeBar" style="display:none">
+        <div class="grow helper" id="writeSummary"></div>
+        <button id="btnWrite" class="primary" disabled>Write to Sheet →</button>
+      </div>
+    </section>
+
+    <!-- STEP 4 -->
+    <section class="step">
+      <div class="step-head">
+        <span class="step-num">04</span>
+        <span class="step-title">Activity</span>
+        <span class="step-sub">audit log of everything done</span>
+      </div>
+      <div class="log" id="log"><span class="ts">[ready]</span> waiting for input.</div>
+    </section>
+
+    <div class="footnote">Meta CSV → Google Sheets · runs entirely in your browser · refresh page to reset<br/><span style="color:var(--accent); margin-top:6px; display:inline-block;">vibe coded by Joseph Bridgeland</span></div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+//  STATE
+// ============================================================
+const state = {
+  csvRows: [],          // [{adSet, country, pub, article, reach, clicks, raw}]
+  countries: new Set(),
+  accessToken: null,
+  sheetTabs: [],        // [{name, gid}]
+  sheetData: {},        // {tabName: {headers:[], rows:[[...]], headerRowIndex:N}}
+  matches: [],          // proposed matches
+  CLIENT_ID: '',
+  SHEET_ID: '',
+};
+
+// Tab name → list of country strings from CSV that route to this tab
+const TAB_MAP = {
+  'US': ['United States', 'United states', 'United States | V1', 'USA', 'US'],
+  'UK': ['UK', 'United Kingdom'],
+  'CA': ['Canada', 'CA'],
+  'AU': ['Australia', 'AU'],
+  'DE': ['Germany', 'DE'],
+  'FR': ['France', 'FR'],
+};
+
+// Reverse lookup: country string (lowercased) → tab name
+const COUNTRY_TO_TAB = {};
+for (const [tab, list] of Object.entries(TAB_MAP)) {
+  for (const c of list) COUNTRY_TO_TAB[c.toLowerCase()] = tab;
+}
+
+// ============================================================
+//  UTILITIES
+// ============================================================
+function log(msg, kind='') {
+  const el = document.getElementById('log');
+  const t = new Date().toTimeString().slice(0,8);
+  const cls = kind ? ` class="${kind}"` : '';
+  el.innerHTML += `<br/><span class="ts">[${t}]</span><span${cls}>${msg}</span>`;
+  el.scrollTop = el.scrollHeight;
+}
+
+function normalizeApostrophe(s) {
+  return (s || '').replace(/['']/g, "'").replace(/\s+/g, ' ').trim();
+}
+
+// Normalize publication name for matching: lowercase, normalize apostrophes/spaces.
+// We deliberately keep words like "Pro" intact so "TechRadar Pro" ≠ "TechRadar".
+function normalizePub(s) {
+  return normalizeApostrophe(s).toLowerCase();
+}
+
+// Parse a Meta ad-set name into structured parts.
+// Format: "Brand | Publication - Article N - Topic - Country"
+// (Brand may be "Dell" or "Dell LLM"; Publication may contain "Pro"; topic is ignored.)
+// Meta exports occasionally use en-dash (–) or pipe ( | ) as the country
+// separator instead of hyphen — normalise those to " - " before splitting.
+// We keep the first pipe intact because it separates Brand | Publication;
+// only pipes AFTER that one (which sit before the country) get normalised.
+function parseAdSetName(name) {
+  if (!name) return null;
+  let cleaned = normalizeApostrophe(name);
+  // Strip trailing " | V1" / " | v2" variant suffix FIRST so the next step
+  // doesn't accidentally convert it into a country segment.
+  cleaned = cleaned.replace(/\s*\|\s*v\d+\s*$/i, '');
+  // Replace en-dash and em-dash variants with hyphen-separator
+  cleaned = cleaned.replace(/\s+[–—]\s+/g, ' - ');
+  // Replace pipe-as-separator with hyphen, but preserve the FIRST pipe
+  // which divides Brand from Publication.
+  const firstPipe = cleaned.indexOf('|');
+  if (firstPipe !== -1) {
+    const before = cleaned.slice(0, firstPipe + 1);
+    const after = cleaned.slice(firstPipe + 1).replace(/\s+\|\s+/g, ' - ');
+    cleaned = before + after;
+  }
+  const segments = cleaned.split(' - ').map(s => s.trim());
+  if (segments.length < 3) return null;
+
+  // First segment contains "Brand | Publication"
+  const firstParts = segments[0].split('|').map(s => s.trim());
+  if (firstParts.length < 2) return null;
+  const publication = firstParts[1];
+
+  // Find the "Article N" segment
+  let articleNum = null;
+  for (const seg of segments) {
+    const m = seg.match(/^Article\s+(\d+)$/i);
+    if (m) { articleNum = parseInt(m[1], 10); break; }
+  }
+  if (articleNum === null) return null;
+
+  const country = segments[segments.length - 1].trim();
+
+  return { publication, articleNum, country };
+}
+
+// Parse a sheet "Publication" cell into {publication, articleNum}.
+// Expected: "TechRadar standard article 9", "TechRadar Pro article 14", "Tom's Guide standard article 10", "Windows Central standard article 12", "IT Pro standard article 11"
+function parseSheetPub(text) {
+  if (!text) return null;
+  const cleaned = normalizeApostrophe(text);
+  // Match: <Publication> [standard ]article <N>
+  const m = cleaned.match(/^(.+?)\s+(?:standard\s+)?article\s+(\d+)\s*$/i);
+  if (!m) return null;
+  return { publication: m[1].trim(), articleNum: parseInt(m[2], 10) };
+}
+
+// Strict match: case/whitespace/apostrophe normalised but Pro is significant.
+function pubsMatch(csvPub, sheetPub) {
+  return normalizePub(csvPub) === normalizePub(sheetPub);
+}
+
+// Loose match: also matches across "Pro" suffix. "TechRadar" ↔ "TechRadar Pro".
+// Only used as a fallback when no strict match exists.
+function pubsMatchLoose(csvPub, sheetPub) {
+  if (pubsMatch(csvPub, sheetPub)) return true;
+  const stripPro = s => normalizePub(s).replace(/\s+pro$/i, '').trim();
+  return stripPro(csvPub) === stripPro(sheetPub);
+}
+
+// ============================================================
+//  CSV PARSING
+// ============================================================
+function setupDropzone() {
+  const dz = document.getElementById('dropzone');
+  const input = document.getElementById('fileInput');
+  dz.addEventListener('click', () => input.click());
+  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('dragging'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('dragging'));
+  dz.addEventListener('drop', e => {
+    e.preventDefault();
+    dz.classList.remove('dragging');
+    if (e.dataTransfer.files[0]) handleCsvFile(e.dataTransfer.files[0]);
+  });
+  input.addEventListener('change', e => {
+    if (e.target.files[0]) handleCsvFile(e.target.files[0]);
+  });
+}
+
+function handleCsvFile(file) {
+  log(`Parsing CSV: ${file.name} (${(file.size/1024).toFixed(1)} KB)`);
+  Papa.parse(file, {
+    header: true,
+    skipEmptyLines: true,
+    complete: (results) => {
+      const rows = results.data;
+      const parsed = [];
+      let skipped = 0;
+      for (const r of rows) {
+        const name = r['Ad set name'];
+        if (!name) { skipped++; continue; }
+        const p = parseAdSetName(name);
+        if (!p) { skipped++; continue; }
+        const reach = parseFloat(r['Reach']);
+        const clicks = parseFloat(r['Link clicks']);
+        parsed.push({
+          adSet: name,
+          publication: p.publication,
+          articleNum: p.articleNum,
+          country: p.country,
+          tab: COUNTRY_TO_TAB[p.country.toLowerCase()] || null,
+          reach: isNaN(reach) ? null : Math.round(reach),
+          clicks: isNaN(clicks) ? null : Math.round(clicks),
+        });
+      }
+      state.csvRows = parsed;
+      state.countries = new Set(parsed.map(p => p.tab).filter(Boolean));
+      const pubs = new Set(parsed.map(p => normalizePub(p.publication)));
+
+      document.getElementById('sRows').textContent = parsed.length;
+      document.getElementById('sCountries').textContent = state.countries.size;
+      document.getElementById('sPubs').textContent = pubs.size;
+      document.getElementById('sSkipped').textContent = skipped;
+      document.getElementById('csvStats').style.display = 'block';
+      document.getElementById('dropzone').classList.add('loaded');
+      document.getElementById('dropzone').querySelector('.big').textContent = `Loaded: ${file.name}`;
+      document.getElementById('dropzone').querySelector('.small').textContent = `${parsed.length} ad sets ready · ${state.countries.size} geos · ${pubs.size} unique publications`;
+
+      log(`Parsed ${parsed.length} ad sets, ${skipped} skipped, geos: ${[...state.countries].join(', ')}`, 'ok');
+      maybeBuildMatches();
+    },
+    error: (err) => log(`Parse error: ${err.message}`, 'err'),
+  });
+}
+
+// ============================================================
+//  GOOGLE OAUTH (token client — implicit flow, no client secret)
+// ============================================================
+let tokenClient = null;
+
+function loadGisLibrary() {
+  return new Promise((resolve, reject) => {
+    if (window.google && google.accounts && google.accounts.oauth2) return resolve();
+    const s = document.createElement('script');
+    s.src = 'https://accounts.google.com/gsi/client';
+    s.async = true;
+    s.defer = true;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('Failed to load Google Identity Services'));
+    document.head.appendChild(s);
+  });
+}
+
+async function connectGoogle() {
+  const cid = document.getElementById('clientId').value.trim();
+  const sid = document.getElementById('sheetId').value.trim();
+  if (!cid) { log('Enter your OAuth Client ID first.', 'err'); return; }
+  if (!sid) { log('Enter the Spreadsheet ID first.', 'err'); return; }
+  state.CLIENT_ID = cid;
+  state.SHEET_ID = sid;
+
+  try {
+    await loadGisLibrary();
+    log('Google Identity Services loaded.', 'ok');
+  } catch (e) {
+    log(e.message, 'err'); return;
+  }
+
+  tokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: cid,
+    scope: 'https://www.googleapis.com/auth/spreadsheets',
+    callback: (resp) => {
+      if (resp.error) {
+        log(`OAuth error: ${resp.error}`, 'err');
+        document.getElementById('connStatus').textContent = `Auth failed: ${resp.error}`;
+        return;
+      }
+      state.accessToken = resp.access_token;
+      document.getElementById('connStatus').innerHTML = '<span class="pill ok">Signed in</span>';
+      document.getElementById('btnLoadSheet').disabled = false;
+      log('Signed in to Google.', 'ok');
+    },
+  });
+
+  tokenClient.requestAccessToken({ prompt: 'consent' });
+}
+
+async function gapi(path, opts = {}) {
+  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${state.SHEET_ID}${path}`, {
+    ...opts,
+    headers: {
+      'Authorization': `Bearer ${state.accessToken}`,
+      'Content-Type': 'application/json',
+      ...(opts.headers || {}),
+    },
+  });
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`Sheets API ${res.status}: ${t}`);
+  }
+  return res.json();
+}
+
+// ============================================================
+//  LOAD SHEET STRUCTURE
+// ============================================================
+async function loadSheet() {
+  log('Loading spreadsheet metadata...');
+  try {
+    const meta = await gapi('?fields=sheets(properties(sheetId,title))');
+    state.sheetTabs = meta.sheets.map(s => ({ name: s.properties.title, gid: s.properties.sheetId }));
+    log(`Tabs found: ${state.sheetTabs.map(t => t.name).join(', ')}`, 'ok');
+
+    // For each tab that maps to a country we care about, fetch the data.
+    const tabsWeWant = state.sheetTabs.filter(t =>
+      Object.keys(TAB_MAP).some(tab => t.name.toUpperCase().includes(tab))
+    );
+    log(`Will read ${tabsWeWant.length} tab(s): ${tabsWeWant.map(t=>t.name).join(', ')}`);
+
+    for (const t of tabsWeWant) {
+      log(`  ↳ reading "${t.name}"...`);
+      const resp = await gapi(`/values/${encodeURIComponent(t.name)}?valueRenderOption=FORMATTED_VALUE`);
+      const rows = resp.values || [];
+      // Find header row: any row containing a cell that equals "Publication"
+      let headerIdx = -1;
+      let pubColIdx = -1;
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i] || [];
+        for (let c = 0; c < row.length; c++) {
+          if ((row[c] || '').trim().toLowerCase() === 'publication') {
+            headerIdx = i;
+            pubColIdx = c;
+            break;
+          }
+        }
+        if (headerIdx !== -1) break;
+      }
+      if (headerIdx === -1) {
+        log(`    no "Publication" header found in "${t.name}", skipping.`, 'warn');
+        continue;
+      }
+      const headers = rows[headerIdx];
+      const dataRows = rows.slice(headerIdx + 1);
+      // Locate target columns
+      const findCol = (...names) => {
+        for (const n of names) {
+          const idx = headers.findIndex(h => (h||'').toLowerCase().replace(/\s+/g,' ').trim() === n.toLowerCase());
+          if (idx !== -1) return idx;
+        }
+        return -1;
+      };
+      const reachCol = findCol('Social Traffic Driver Reach', 'Social Traffic Driver Reach ');
+      const clicksCol = findCol('Social Traffic Driver Clicks', 'Social Traffic Driver Clicks ');
+
+      // Find the actual tab key (US/UK/CA/AU/DE/FR)
+      let tabKey = null;
+      for (const k of Object.keys(TAB_MAP)) {
+        if (t.name.toUpperCase().includes(k)) { tabKey = k; break; }
+      }
+
+      state.sheetData[tabKey] = {
+        tabName: t.name,
+        headerRowIndex: headerIdx,         // 0-indexed row of headers
+        headers,
+        rows: dataRows,
+        pubColIdx: pubColIdx,
+        reachColIdx: reachCol,
+        clicksColIdx: clicksCol,
+      };
+      log(`    ${dataRows.length} rows below header; Publication col=${String.fromCharCode(65+pubColIdx)}, Reach col=${reachCol===-1?'NOT FOUND':String.fromCharCode(65+reachCol)}, Clicks col=${clicksCol===-1?'NOT FOUND':String.fromCharCode(65+clicksCol)}`, reachCol===-1||clicksCol===-1?'warn':'ok');
+    }
+    log('Sheet structure loaded.', 'ok');
+    maybeBuildMatches();
+  } catch (e) {
+    log(e.message, 'err');
+  }
+}
+
+// ============================================================
+//  MATCHING
+// ============================================================
+function maybeBuildMatches() {
+  if (!state.csvRows.length || !Object.keys(state.sheetData).length) return;
+  buildMatches();
+}
+
+function buildMatches() {
+  const out = [];
+  for (const csvRow of state.csvRows) {
+    if (!csvRow.tab) {
+      out.push({ kind: 'unmatched', csvRow, reason: `Unknown country "${csvRow.country}"`, selected: false });
+      continue;
+    }
+    const tab = state.sheetData[csvRow.tab];
+    if (!tab) {
+      out.push({ kind: 'unmatched', csvRow, reason: `No sheet tab loaded for ${csvRow.tab}`, selected: false });
+      continue;
+    }
+    // Pass 1: strict match (Pro vs non-Pro stays distinct)
+    let candidates = [];
+    let fuzzy = false;
+    for (let i = 0; i < tab.rows.length; i++) {
+      const cell = (tab.rows[i][tab.pubColIdx] || '').trim();
+      if (!cell) continue;
+      const parsed = parseSheetPub(cell);
+      if (!parsed) continue;
+      if (parsed.articleNum !== csvRow.articleNum) continue;
+      if (!pubsMatch(csvRow.publication, parsed.publication)) continue;
+      candidates.push({ rowIdx: i, absoluteRow: tab.headerRowIndex + 1 + i + 1, sheetText: cell });
+    }
+    // Pass 2: if no strict match, try loose (Pro suffix tolerance)
+    if (candidates.length === 0) {
+      for (let i = 0; i < tab.rows.length; i++) {
+        const cell = (tab.rows[i][tab.pubColIdx] || '').trim();
+        if (!cell) continue;
+        const parsed = parseSheetPub(cell);
+        if (!parsed) continue;
+        if (parsed.articleNum !== csvRow.articleNum) continue;
+        if (!pubsMatchLoose(csvRow.publication, parsed.publication)) continue;
+        candidates.push({ rowIdx: i, absoluteRow: tab.headerRowIndex + 1 + i + 1, sheetText: cell });
+      }
+      if (candidates.length > 0) fuzzy = true;
+    }
+    if (candidates.length === 0) {
+      out.push({ kind: 'unmatched', csvRow, reason: `No row in "${tab.tabName}" matches "${csvRow.publication} article ${csvRow.articleNum}"`, selected: false });
+    } else if (candidates.length === 1) {
+      out.push({ kind: 'match', csvRow, tabKey: csvRow.tab, target: candidates[0], selected: true, fuzzy });
+    } else {
+      out.push({ kind: 'ambiguous', csvRow, tabKey: csvRow.tab, candidates, selected: false, fuzzy });
+    }
+  }
+  state.matches = out;
+  renderPreview();
+}
+
+// ============================================================
+//  PREVIEW UI
+// ============================================================
+let currentFilter = 'all';
+
+function renderPreview() {
+  const wrap = document.getElementById('previewWrap');
+  const fbar = document.getElementById('filterBar');
+  const wbar = document.getElementById('writeBar');
+  if (!state.matches.length) {
+    wrap.innerHTML = '<div class="empty">No matches built yet.</div>';
+    return;
+  }
+  fbar.style.display = 'flex';
+  wbar.style.display = 'flex';
+
+  const counts = { all: state.matches.length, match: 0, unmatched: 0, ambiguous: 0 };
+  for (const m of state.matches) counts[m.kind]++;
+  document.getElementById('filterCount').textContent =
+    `${counts.match} match · ${counts.unmatched} unmatched · ${counts.ambiguous} ambiguous`;
+
+  const filtered = currentFilter === 'all'
+    ? state.matches
+    : state.matches.filter(m => m.kind === currentFilter);
+
+  const rowsHtml = filtered.map((m, i) => {
+    const globalIdx = state.matches.indexOf(m);
+    const checkbox = m.kind === 'match'
+      ? `<input type="checkbox" class="rowsel" data-idx="${globalIdx}" ${m.selected ? 'checked' : ''} />`
+      : (m.kind === 'ambiguous'
+          ? `<input type="checkbox" disabled title="Ambiguous matches cannot be written" />`
+          : `<input type="checkbox" disabled title="Unmatched rows cannot be written" />`);
+    if (m.kind === 'match') {
+      const t = state.sheetData[m.tabKey];
+      const reachColLetter = t.reachColIdx >= 0 ? String.fromCharCode(65 + t.reachColIdx) : '—';
+      const clicksColLetter = t.clicksColIdx >= 0 ? String.fromCharCode(65 + t.clicksColIdx) : '—';
+      const fuzzyBadge = m.fuzzy ? ` <span class="pill warn" title="Pro-suffix fuzzy match — sanity-check this one">fuzzy</span>` : '';
+      return `<tr class="match${m.selected?'':' deselected'}">
+        <td style="text-align:center;">${checkbox}</td>
+        <td><span class="pill ok">match</span>${fuzzyBadge}</td>
+        <td>${escapeHtml(m.csvRow.adSet)}</td>
+        <td>${m.tabKey}</td>
+        <td>${escapeHtml(m.target.sheetText)}<br/><span style="color:var(--ink-soft); font-size:10px;">row ${m.target.absoluteRow}</span></td>
+        <td><strong>${fmtNum(m.csvRow.reach)}</strong> → ${reachColLetter}${m.target.absoluteRow}</td>
+        <td><strong>${fmtNum(m.csvRow.clicks)}</strong> → ${clicksColLetter}${m.target.absoluteRow}</td>
+      </tr>`;
+    }
+    if (m.kind === 'unmatched') {
+      return `<tr class="unmatched">
+        <td style="text-align:center;">${checkbox}</td>
+        <td><span class="pill err">unmatched</span></td>
+        <td>${escapeHtml(m.csvRow.adSet)}</td>
+        <td>${m.csvRow.tab || '?'}</td>
+        <td colspan="3" style="font-style:italic;">${escapeHtml(m.reason)}</td>
+      </tr>`;
+    }
+    if (m.kind === 'ambiguous') {
+      const lines = m.candidates.map(c => `row ${c.absoluteRow}: "${escapeHtml(c.sheetText)}"`).join('<br/>');
+      return `<tr class="ambiguous">
+        <td style="text-align:center;">${checkbox}</td>
+        <td><span class="pill warn">ambiguous</span></td>
+        <td>${escapeHtml(m.csvRow.adSet)}</td>
+        <td>${m.tabKey}</td>
+        <td colspan="3" style="font-style:italic;">Multiple rows match — won't write. Candidates:<br/>${lines}</td>
+      </tr>`;
+    }
+    return '';
+  }).join('');
+
+  wrap.innerHTML = `
+    <table class="preview">
+      <thead>
+        <tr>
+          <th style="width:36px; text-align:center;">✓</th>
+          <th style="width:90px;">Status</th>
+          <th>Meta Ad set</th>
+          <th style="width:50px;">Tab</th>
+          <th>Sheet target</th>
+          <th>Reach</th>
+          <th>Link clicks</th>
+        </tr>
+      </thead>
+      <tbody>${rowsHtml || '<tr><td colspan="7" class="empty">No rows in this view.</td></tr>'}</tbody>
+    </table>
+  `;
+
+  // Wire up checkboxes
+  wrap.querySelectorAll('.rowsel').forEach(cb => {
+    cb.addEventListener('change', e => {
+      const idx = parseInt(e.target.dataset.idx, 10);
+      state.matches[idx].selected = e.target.checked;
+      updateWriteSummary();
+    });
+  });
+
+  updateWriteSummary();
+}
+
+function updateWriteSummary() {
+  const counts = { match: 0, unmatched: 0, ambiguous: 0, selected: 0 };
+  for (const m of state.matches) {
+    counts[m.kind]++;
+    if (m.kind === 'match' && m.selected) counts.selected++;
+  }
+  document.getElementById('writeSummary').innerHTML =
+    `<strong>${counts.selected}</strong> of ${counts.match} matched row${counts.match===1?'':'s'} selected to write. ` +
+    `<strong>${counts.unmatched}</strong> unmatched, <strong>${counts.ambiguous}</strong> ambiguous (always skipped).`;
+  document.getElementById('btnWrite').disabled = counts.selected === 0;
+}
+
+function escapeHtml(s) {
+  return String(s || '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+function fmtNum(n) {
+  if (n === null || n === undefined || isNaN(n)) return '<span style="color:var(--err)">—</span>';
+  return n.toLocaleString();
+}
+
+// ============================================================
+//  WRITE TO SHEET (batch update)
+// ============================================================
+async function writeToSheet() {
+  const toWrite = state.matches.filter(m => m.kind === 'match' && m.selected);
+  if (!toWrite.length) return;
+  if (!confirm(`Write ${toWrite.length} selected row${toWrite.length===1?'':'s'} to your Google Sheet?\n\nReach and Link clicks values will OVERWRITE the existing cells.`)) return;
+
+  document.getElementById('btnWrite').disabled = true;
+  log(`Writing ${toWrite.length} matches to sheet...`);
+
+  // Build batch update data: one update per cell
+  const data = [];
+  for (const m of toWrite) {
+    const t = state.sheetData[m.tabKey];
+    if (t.reachColIdx >= 0 && m.csvRow.reach !== null) {
+      data.push({
+        range: `'${t.tabName}'!${colLetter(t.reachColIdx)}${m.target.absoluteRow}`,
+        values: [[m.csvRow.reach]],
+      });
+    }
+    if (t.clicksColIdx >= 0 && m.csvRow.clicks !== null) {
+      data.push({
+        range: `'${t.tabName}'!${colLetter(t.clicksColIdx)}${m.target.absoluteRow}`,
+        values: [[m.csvRow.clicks]],
+      });
+    }
+  }
+
+  try {
+    const resp = await gapi(':batchUpdate'.replace(':batchUpdate', '/values:batchUpdate'), {
+      method: 'POST',
+      body: JSON.stringify({ valueInputOption: 'USER_ENTERED', data }),
+    });
+    log(`✓ Wrote ${resp.totalUpdatedCells} cells across ${resp.totalUpdatedSheets} sheet(s).`, 'ok');
+    document.getElementById('writeSummary').innerHTML += ` <span class="pill ok">Done — ${resp.totalUpdatedCells} cells updated</span>`;
+  } catch (e) {
+    log(`Write failed: ${e.message}`, 'err');
+    document.getElementById('btnWrite').disabled = false;
+  }
+}
+
+function colLetter(idx) {
+  let s = '';
+  let n = idx;
+  do {
+    s = String.fromCharCode(65 + (n % 26)) + s;
+    n = Math.floor(n / 26) - 1;
+  } while (n >= 0);
+  return s;
+}
+
+// ============================================================
+//  EVENT WIRING
+// ============================================================
+document.getElementById('btnConnect').addEventListener('click', connectGoogle);
+document.getElementById('btnLoadSheet').addEventListener('click', loadSheet);
+document.getElementById('btnWrite').addEventListener('click', writeToSheet);
+document.querySelectorAll('.fchip[data-filter]').forEach(el => {
+  el.addEventListener('click', () => {
+    document.querySelectorAll('.fchip[data-filter]').forEach(e => e.classList.remove('active'));
+    el.classList.add('active');
+    currentFilter = el.dataset.filter;
+    renderPreview();
+  });
+});
+
+// Select all / none buttons (operate on currently-visible matches only)
+document.addEventListener('click', (e) => {
+  if (e.target.id === 'selectAll' || e.target.id === 'selectNone') {
+    const targetState = e.target.id === 'selectAll';
+    const visible = currentFilter === 'all'
+      ? state.matches
+      : state.matches.filter(m => m.kind === currentFilter);
+    for (const m of visible) {
+      if (m.kind === 'match') m.selected = targetState;
+    }
+    renderPreview();
+  }
+});
+
+setupDropzone();
+</script>
+</body>
+</html>
