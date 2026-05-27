@@ -2,7 +2,7 @@
 
 A browser-based tool for pulling **Reach** and **Link Clicks** from a Meta Ads Manager CSV export and writing them into the correct cells of a Google Sheet — automatically matched by publication, article number, and geo.
 
-Built for TI Media's paid social reporting workflow.
+Built for Patrycja to make her life easier
 
 ---
 
