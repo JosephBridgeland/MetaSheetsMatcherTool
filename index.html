@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Meta → Sheets Matcher</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+</head>
+<body>
+
+<div class="frame">
+  <header class="masthead">
+    <h1>Meta<span class="amp">→</span><em>Sheets</em><br/>Matcher</h1>
+    <div class="tag">Local · Browser-only · vibe coded by Joseph Bridgeland</div>
+  </header>
+
+  <div class="body">
+
+    <!-- STEP 1 -->
+    <section class="step">
+      <div class="step-head">
+        <span class="step-num">01</span>
+        <span class="step-title">Drop your Meta CSV export</span>
+        <span class="step-sub">parsed in-browser, never leaves your machine</span>
+      </div>
+      <div id="dropzone" class="file-drop">
+        <span class="big">Drop CSV here or click to choose</span>
+        <span class="small">Expecting columns: Ad set name · Reach · Link clicks</span>
+        <input id="fileInput" type="file" accept=".csv" hidden />
+      </div>
+      <div id="csvStats" style="display:none">
+        <div class="stats">
+          <div class="stat ok"><div class="n" id="sRows">0</div><div class="l">Rows parsed</div></div>
+          <div class="stat"><div class="n" id="sCountries">0</div><div class="l">Geos detected</div></div>
+          <div class="stat"><div class="n" id="sPubs">0</div><div class="l">Publications</div></div>
+          <div class="stat warn"><div class="n" id="sSkipped">0</div><div class="l">Unparseable</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- STEP 2 -->
+    <section class="step">
+      <div class="step-head">
+        <span class="step-num">02</span>
+        <span class="step-title">Connect Google Sheets</span>
+        <span class="step-sub">OAuth via your own client ID</span>
+      </div>
+      <div class="row cols">
+        <div>
+          <label class="field">Google OAuth Client ID</label>
+          <input id="clientId" type="text" placeholder="xxxxxxxxxxxx.apps.googleusercontent.com" />
+        </div>
+        <div>
+          <label class="field">Spreadsheet ID (from the URL)</label>
+          <input id="sheetId" type="text" placeholder="1AbC...xyZ" />
+        </div>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <button id="btnConnect">Sign in with Google</button>
+        <button id="btnLoadSheet" disabled>Load Sheet Structure</button>
+        <span id="connStatus" class="helper" style="margin-top:0; margin-left:6px;"></span>
+      </div>
+      <details class="howto">
+        <summary>How to set this up (one-time, ~5 min)</summary>
+        <ol>
+          <li>Go to <code>console.cloud.google.com</code> → create a new project (or pick one).</li>
+          <li>APIs &amp; Services → <strong>Library</strong> → search "Google Sheets API" → <strong>Enable</strong>.</li>
+          <li>APIs &amp; Services → <strong>OAuth consent screen</strong> → pick <em>External</em>, app name "Meta Matcher", add your Gmail as a test user.</li>
+          <li>APIs &amp; Services → <strong>Credentials</strong> → <strong>Create Credentials → OAuth client ID</strong> → Application type: <em>Web application</em>.</li>
+          <li>Under <strong>Authorised JavaScript origins</strong>, add the GitHub Pages URL for this tool.</li>
+          <li>Copy the Client ID, paste above. Open your Sheet — the URL has <code>/d/SPREADSHEET_ID/edit</code> — copy that ID into the second field.</li>
+        </ol>
+      </details>
+    </section>
+
+    <!-- STEP 3 -->
+    <section class="step">
+      <div class="step-head">
+        <span class="step-num">03</span>
+        <span class="step-title">Review proposed matches</span>
+        <span class="step-sub">nothing writes until you say so</span>
+      </div>
+      <div class="filter-bar" id="filterBar" style="display:none">
+        <span class="fchip active" data-filter="all">All</span>
+        <span class="fchip" data-filter="match">Matches</span>
+        <span class="fchip" data-filter="unmatched">Unmatched</span>
+        <span class="fchip" data-filter="ambiguous">Ambiguous</span>
+        <span style="margin-left:14px; padding-left:14px; border-left:1px solid var(--ink-soft);"></span>
+        <span class="fchip" id="selectAll" title="Select all matches currently visible">☑ Select all</span>
+        <span class="fchip" id="selectNone" title="Unselect everything visible">☐ Unselect all</span>
+        <span class="right" id="filterCount"></span>
+      </div>
+      <div id="previewWrap">
+        <div class="empty">Load CSV and sheet to see proposed matches.</div>
+      </div>
+      <div class="write-bar" id="writeBar" style="display:none">
+        <div class="grow helper" id="writeSummary"></div>
+        <button id="btnWrite" class="primary" disabled>Write to Sheet →</button>
+      </div>
+    </section>
+
+    <!-- STEP 4 -->
+    <section class="step">
+      <div class="step-head">
+        <span class="step-num">04</span>
+        <span class="step-title">Activity</span>
+        <span class="step-sub">audit log of everything done</span>
+      </div>
+      <div class="log" id="log"><span class="ts">[ready]</span> waiting for input.</div>
+    </section>
+
+    <div class="footnote">
+      Meta CSV → Google Sheets · runs entirely in your browser · refresh page to reset<br/>
+      <span style="color:var(--accent); margin-top:6px; display:inline-block;">vibe coded by Joseph Bridgeland</span>
+    </div>
+
+  </div>
+</div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
