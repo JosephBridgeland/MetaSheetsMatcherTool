@@ -719,9 +719,20 @@ async function loadSheet() {
     state.sheetTabs = meta.sheets.map(s => ({ name: s.properties.title, gid: s.properties.sheetId }));
     log(`Tabs found: ${state.sheetTabs.map(t => t.name).join(', ')}`, 'ok');
 
+    // Match tab name to country code using whole-word matching so "DE" inside
+    // "UNITED" or "FR" inside "FRANCE" doesn't accidentally cross-match.
+    const tabMatchesKey = (name, key) => {
+      const n = name.toUpperCase();
+      // Try full country names first (e.g. "France" → FR)
+      const fullNames = { US: ['USA','UNITED STATES'], UK: ['UK','UNITED KINGDOM'], CA: ['CANADA'], AU: ['AUSTRALIA'], DE: ['GERMANY'], FR: ['FRANCE'] };
+      if ((fullNames[key] || []).some(full => { const re = new RegExp('(?:^|[^A-Z])' + full + '(?:[^A-Z]|$)'); return re.test(n); })) return true;
+      // Then try the 2-letter code as a whole word
+      return new RegExp('(?:^|[^A-Z])' + key + '(?:[^A-Z]|$)').test(n);
+    };
+
     // For each tab that maps to a country we care about, fetch the data.
     const tabsWeWant = state.sheetTabs.filter(t =>
-      Object.keys(TAB_MAP).some(tab => t.name.toUpperCase().includes(tab))
+      Object.keys(TAB_MAP).some(k => tabMatchesKey(t.name, k))
     );
     log(`Will read ${tabsWeWant.length} tab(s): ${tabsWeWant.map(t=>t.name).join(', ')}`);
 
@@ -763,7 +774,7 @@ async function loadSheet() {
       // Find the actual tab key (US/UK/CA/AU/DE/FR)
       let tabKey = null;
       for (const k of Object.keys(TAB_MAP)) {
-        if (t.name.toUpperCase().includes(k)) { tabKey = k; break; }
+        if (tabMatchesKey(t.name, k)) { tabKey = k; break; }
       }
 
       state.sheetData[tabKey] = {
