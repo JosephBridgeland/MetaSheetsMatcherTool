@@ -73,13 +73,15 @@ Ambiguous matches (same publication + article number appearing more than once in
 
 ## Running locally
 
-The tool runs entirely in your browser — no server or install needed when accessed via GitHub Pages. To run locally:
+The easiest way to use the tool is via GitHub Pages — just open it in any browser, no setup needed.
+
+If you want to run it locally (e.g. to test changes), you need a local server because ES modules don't load over `file://`:
 
 ```bash
 python3 -m http.server 8080
 ```
 
-Then open `http://localhost:8080` in Chrome. Add `http://localhost:8080` to your OAuth client's Authorised JavaScript origins in Google Cloud Console.
+Then open `http://localhost:8080` in Chrome. You'll also need to add `http://localhost:8080` to your OAuth client's Authorised JavaScript origins in Google Cloud Console.
 
 ---
 
